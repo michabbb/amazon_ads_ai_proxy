@@ -253,6 +253,7 @@ Fully quit Claude Desktop from the system tray and start it again.
 | `UPSTREAM_URL` | `https://advertising-ai-eu.amazon.com/mcp` | Upstream endpoint. Use `advertising-ai-na.amazon.com` for North America or `advertising-ai-fe.amazon.com` for Far East. |
 | `LWA_TOKEN_URL` | `https://api.amazon.com/auth/o2/token` | LWA token endpoint |
 | `REFRESH_LEAD_SECONDS` | `120` | Refresh this many seconds before nominal expiry |
+| `EXPOSE_ACCESS_TOKEN` | `false` | If `true`, `GET /access-token` returns the current Bearer token as JSON (see below). No auth — only enable on trusted networks. |
 | `HOST` | `0.0.0.0` | Listen host |
 | `PORT` | `9090` | Listen port |
 | `LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
@@ -263,6 +264,44 @@ Fully quit Claude Desktop from the system tray and start it again.
 |---|---|---|
 | `/mcp` and `/mcp/*` | `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS` | Transparent MCP proxy |
 | `/health` | `GET` | JSON with upstream URL, whether an access token is cached, and its remaining seconds |
+| `/access-token` | `GET` | **Only when `EXPOSE_ACCESS_TOKEN=true`.** Returns the current Bearer token as JSON, refreshing first if needed. Otherwise the route does not exist (404). |
+
+### Using the access token outside MCP
+
+Some Amazon Ads endpoints are not exposed via the MCP surface
+(reporting exports, billing, older v2/v3 routes, etc.). For those
+cases you can let the proxy hand the Bearer token to your own
+scripts instead of re-implementing the LWA refresh flow everywhere.
+
+Enable it in `.env`:
+
+```dotenv
+EXPOSE_ACCESS_TOKEN=true
+```
+
+Restart the container, then fetch the token from any local script:
+
+```python
+import httpx
+
+data = httpx.get("http://localhost:9090/access-token").json()
+# {"access_token": "Atza|...", "expires_in": 3587, "expires_at": 1745280123.4}
+
+r = httpx.get(
+    "https://advertising-api-eu.amazon.com/v2/profiles",
+    headers={
+        "Authorization": f"Bearer {data['access_token']}",
+        "Amazon-Advertising-API-ClientId": "<your LWA client id>",
+    },
+)
+r.raise_for_status()
+print(r.json())
+```
+
+The proxy uses the same cache + refresh logic as the `/mcp` route,
+so the token you receive is always fresh enough. When
+`EXPOSE_ACCESS_TOKEN` is unset or `false`, the endpoint simply does
+not exist — `GET /access-token` returns `404`.
 
 ## Operations
 
@@ -310,6 +349,12 @@ Fully quit Claude Desktop from the system tray and start it again.
   network, or terminate TLS in front of it (nginx, Caddy, Traefik).
 - Logs include the URL of every upstream request and every LWA
   refresh, but never the access or refresh tokens themselves.
+- `EXPOSE_ACCESS_TOKEN=true` turns `/access-token` into an
+  **unauthenticated** token-dispenser. Only flip it on when the
+  proxy is reachable from a trusted scope (localhost, a private
+  Docker network, your workstation). Never enable it on a proxy
+  listening on `0.0.0.0` on a shared network. A warning is logged
+  at startup whenever the flag is on.
 
 ## License
 

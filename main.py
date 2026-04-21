@@ -61,6 +61,16 @@ INITIAL_EXPIRES_IN = int(os.environ.get("AMAZON_EXPIRES_IN", "0") or 0)
 # that upstream will reject due to clock skew / network latency.
 REFRESH_LEAD_SECONDS = int(os.environ.get("REFRESH_LEAD_SECONDS", "120"))
 
+# Off by default. When enabled, exposes GET /access-token returning the
+# current Bearer token as JSON. Intended for local scripts that need to
+# call Amazon Ads APIs not covered by the MCP surface.
+EXPOSE_ACCESS_TOKEN = os.environ.get("EXPOSE_ACCESS_TOKEN", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
 # Hop-by-hop headers that must not be forwarded verbatim.
 _HOP_BY_HOP = {
     "connection",
@@ -259,6 +269,24 @@ async def health(_request: Request) -> JSONResponse:
     )
 
 
+async def access_token(_request: Request) -> JSONResponse:
+    try:
+        token = await tokens.get(upstream)
+    except httpx.HTTPError as exc:
+        logger.exception("Could not obtain access token for /access-token")
+        return JSONResponse(
+            {"error": "token_refresh_failed", "detail": str(exc)},
+            status_code=502,
+        )
+    return JSONResponse(
+        {
+            "access_token": token,
+            "expires_at": tokens.expires_at,
+            "expires_in": max(0, int(tokens.expires_at - time.time())),
+        }
+    )
+
+
 @asynccontextmanager
 async def lifespan(_app: Starlette):
     yield
@@ -267,22 +295,29 @@ async def lifespan(_app: Starlette):
 
 # ── App ────────────────────────────────────────────────────────────────────
 
-app = Starlette(
-    routes=[
-        Route(
-            "/mcp",
-            proxy,
-            methods=["GET", "POST", "DELETE", "OPTIONS", "PUT", "PATCH"],
-        ),
-        Route(
-            "/mcp/{path:path}",
-            proxy,
-            methods=["GET", "POST", "DELETE", "OPTIONS", "PUT", "PATCH"],
-        ),
-        Route("/health", health, methods=["GET"]),
-    ],
-    lifespan=lifespan,
-)
+_routes = [
+    Route(
+        "/mcp",
+        proxy,
+        methods=["GET", "POST", "DELETE", "OPTIONS", "PUT", "PATCH"],
+    ),
+    Route(
+        "/mcp/{path:path}",
+        proxy,
+        methods=["GET", "POST", "DELETE", "OPTIONS", "PUT", "PATCH"],
+    ),
+    Route("/health", health, methods=["GET"]),
+]
+
+if EXPOSE_ACCESS_TOKEN:
+    _routes.append(Route("/access-token", access_token, methods=["GET"]))
+    logger.warning(
+        "EXPOSE_ACCESS_TOKEN=true — GET /access-token will return the Bearer "
+        "token without any auth. Only safe when the proxy is reachable on "
+        "localhost / a trusted network."
+    )
+
+app = Starlette(routes=_routes, lifespan=lifespan)
 
 
 if __name__ == "__main__":
