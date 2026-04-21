@@ -264,7 +264,8 @@ Fully quit Claude Desktop from the system tray and start it again.
 |---|---|---|
 | `/mcp` and `/mcp/*` | `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS` | Transparent MCP proxy |
 | `/health` | `GET` | JSON with upstream URL, whether an access token is cached, and its remaining seconds |
-| `/access-token` | `GET` | **Only when `EXPOSE_ACCESS_TOKEN=true`.** Returns the current Bearer token as JSON, refreshing first if needed. Otherwise the route does not exist (404). |
+| `/access-token` | `GET` | **Only when `EXPOSE_ACCESS_TOKEN=true`.** Returns the current Bearer token as JSON, refreshing first if it would expire within `REFRESH_LEAD_SECONDS`. Otherwise the route does not exist (404). |
+| `/access-token` | `POST` | **Only when `EXPOSE_ACCESS_TOKEN=true`.** Forces a fresh LWA refresh and returns the new token. Use this when you suspect the cached token is no good (Amazon revoked it, you want a guaranteed long lifetime, etc.). |
 
 ### Using the access token outside MCP
 
@@ -284,8 +285,16 @@ Restart the container, then fetch the token from any local script:
 ```python
 import httpx
 
+# GET → cached token (auto-refreshes only if it would expire within
+#       REFRESH_LEAD_SECONDS). Use this in 99% of cases.
 data = httpx.get("http://localhost:9090/access-token").json()
-# {"access_token": "Atza|...", "expires_in": 3587, "expires_at": 1745280123.4}
+# {"access_token": "Atza|...", "expires_in": 3587, "expires_at": 1745280123.4, "refreshed": false}
+
+# POST → forces a fresh LWA refresh and returns the new token.
+#        Use after a 401 from a downstream API, or when you want a
+#        guaranteed long lifetime for a long-running batch job.
+data = httpx.post("http://localhost:9090/access-token").json()
+# {"access_token": "Atza|...", "expires_in": 3599, "expires_at": ..., "refreshed": true}
 
 r = httpx.get(
     "https://advertising-api-eu.amazon.com/v2/profiles",

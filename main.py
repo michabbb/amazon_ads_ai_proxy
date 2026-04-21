@@ -269,9 +269,12 @@ async def health(_request: Request) -> JSONResponse:
     )
 
 
-async def access_token(_request: Request) -> JSONResponse:
+async def access_token(request: Request) -> JSONResponse:
+    # GET  → return cached token (refreshes only if stale per REFRESH_LEAD_SECONDS)
+    # POST → force a fresh LWA refresh and return the new token
+    force = request.method == "POST"
     try:
-        token = await tokens.get(upstream)
+        token = await tokens.get(upstream, force=force)
     except httpx.HTTPError as exc:
         logger.exception("Could not obtain access token for /access-token")
         return JSONResponse(
@@ -283,6 +286,7 @@ async def access_token(_request: Request) -> JSONResponse:
             "access_token": token,
             "expires_at": tokens.expires_at,
             "expires_in": max(0, int(tokens.expires_at - time.time())),
+            "refreshed": force,
         }
     )
 
@@ -310,11 +314,11 @@ _routes = [
 ]
 
 if EXPOSE_ACCESS_TOKEN:
-    _routes.append(Route("/access-token", access_token, methods=["GET"]))
+    _routes.append(Route("/access-token", access_token, methods=["GET", "POST"]))
     logger.warning(
-        "EXPOSE_ACCESS_TOKEN=true — GET /access-token will return the Bearer "
-        "token without any auth. Only safe when the proxy is reachable on "
-        "localhost / a trusted network."
+        "EXPOSE_ACCESS_TOKEN=true — GET/POST /access-token will return the "
+        "Bearer token without any auth (POST forces a refresh). Only safe "
+        "when the proxy is reachable on localhost / a trusted network."
     )
 
 app = Starlette(routes=_routes, lifespan=lifespan)
